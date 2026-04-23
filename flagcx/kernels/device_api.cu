@@ -145,6 +145,129 @@ flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
 }
 
 // ==========================================================================
+// Intra-node PeerPointer correctness test kernel
+//
+// Each rank writes its rank value into every peer's buffer at offset [myRank].
+// Single-threaded kernel for simplicity.
+// ==========================================================================
+// Simple kernel: each rank writes its rank value into every peer's buffer.
+// No device-side barrier — host-side MPI_Barrier handles cross-rank sync.
+__global__ void flagcxIntraTestPeerPointerKernel(flagcxDevComm devComm,
+                                                 flagcxDevMem devMem) {
+  // DEBUG: print sizes and raw bytes on device
+  printf("[DEVICE] sizeof(flagcxDevComm)=%d sizeof(flagcxDevMem)=%d\n",
+         (int)sizeof(flagcxDevComm), (int)sizeof(flagcxDevMem));
+  printf("[DEVICE] devMem._rawPtr=%p _winBase.rawPtr=%p peerPtrs=%p intraRank=%d\n",
+         devMem._rawPtr, devMem._winBase.rawPtr,
+         (void*)devMem._winBase.peerPtrs, devMem._winBase.intraRank);
+  printf("[DEVICE] devComm intraRank=%d intraSize=%d\n",
+         devComm._commBase.intraRank, devComm._commBase.intraSize);
+
+  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+  int myRank = devComm.getIntraRank();
+  int nRanks = devComm.getIntraSize();
+
+  for (int peer = 0; peer < nRanks; peer++) {
+    size_t offset = (size_t)myRank * sizeof(int);
+    int *dst = (int *)flagcxGetPeerPointer(devMem, offset, intra, peer);
+    bool hw = devMem._winBase.peerPtrs != nullptr;
+    printf("rank%d: peer=%d offset=%lu dst=%p hasWindow=%d peerPtrs=%p\n",
+           myRank, peer, (unsigned long)offset, (void *)dst, (int)hw, (void*)devMem._winBase.peerPtrs);
+    if (dst) {
+      *dst = myRank;
+      __threadfence_system();
+      printf("rank%d: wrote %d to %p, readback=%d\n", myRank, myRank, (void*)dst, *dst);
+    }
+  }
+  // No device-side barrier here — cross-rank sync is handled by host-side
+  // MPI_Barrier + D2D flush after kernel completion.
+}
+
+flagcxResult_t flagcxIntraTestPeerPointer(flagcxDevMem_t devMem,
+                                          flagcxDevComm_t devComm,
+                                          flagcxStream_t stream) {
+  cudaStream_t cudaStream = *(cudaStream_t *)stream;
+  flagcxDevComm devCommKernel(*devComm);
+  flagcxDevMem devMemKernel(*devMem);
+
+  // DEBUG: dump host-side devMemKernel fields
+  printf("[HOST] sizeof(flagcxDevMem)=%zu sizeof(flagcxDevComm)=%zu\n",
+         sizeof(flagcxDevMem), sizeof(flagcxDevComm));
+  printf("[HOST] devMemKernel._rawPtr=%p\n", devMemKernel._rawPtr);
+  printf("[HOST] devMemKernel._winBase.rawPtr=%p peerPtrs=%p intraRank=%d mrBase=%zu mrIndex=%d\n",
+         devMemKernel._winBase.rawPtr,
+         (void*)devMemKernel._winBase.peerPtrs,
+         devMemKernel._winBase.intraRank,
+         (size_t)devMemKernel._winBase.mrBase,
+         devMemKernel._winBase.mrIndex);
+  printf("[HOST] devCommKernel intraRank=%d intraSize=%d\n",
+         devCommKernel._commBase.intraRank, devCommKernel._commBase.intraSize);
+
+  flagcxIntraTestPeerPointerKernel<<<1, 1, 0, cudaStream>>>(devCommKernel,
+                                                            devMemKernel);
+
+  cudaError_t err = cudaGetLastError();
+
+  // No barrier in kernel — epoch tracking not needed
+  return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+// Kernel: verify getIntraPointer correctness
+// Prints peerPtrs entries, checks self-pointer consistency, then writes
+// using getIntraPointer directly.
+__global__ void kernelVerifyIntraPointer(flagcxDevComm devComm, flagcxDevMem mem,
+                                         int myRank, int nRanks) {
+  printf("[VERIFY] rank%d: rawPtr=%p peerPtrs=%p intraRank=%d nRanks=%d\n",
+         myRank, mem._winBase.rawPtr, (void*)mem._winBase.peerPtrs,
+         mem._winBase.intraRank, nRanks);
+
+  if (mem._winBase.peerPtrs) {
+    for (int i = 0; i < nRanks; i++) {
+      printf("[VERIFY] rank%d: peerPtrs[%d] = %p\n",
+             myRank, i, mem._winBase.peerPtrs[i]);
+    }
+    void *selfPtr = mem._winBase.peerPtrs[myRank];
+    if (selfPtr == mem._winBase.rawPtr) {
+      printf("[VERIFY] rank%d: SELF-CHECK OK (peerPtrs[%d] == rawPtr)\n",
+             myRank, myRank);
+    } else {
+      printf("[VERIFY] rank%d: SELF-CHECK FAIL (peerPtrs[%d]=%p != rawPtr=%p)\n",
+             myRank, myRank, selfPtr, mem._winBase.rawPtr);
+    }
+  } else {
+    printf("[VERIFY] rank%d: peerPtrs is NULL!\n", myRank);
+  }
+
+  for (int peer = 0; peer < nRanks; peer++) {
+    size_t offset = (size_t)myRank * sizeof(int);
+    int *dst = (int *)flagcxGetIntraPointer(mem, offset, peer);
+    printf("[VERIFY] rank%d: getIntraPointer(offset=%lu, peer=%d) = %p\n",
+           myRank, (unsigned long)offset, peer, (void*)dst);
+    if (dst) {
+      *dst = myRank;
+      __threadfence_system();
+    }
+  }
+}
+
+flagcxResult_t flagcxIntraVerifyIntraPointer(flagcxDevMem_t devMem,
+                                             flagcxDevComm_t devComm,
+                                             flagcxStream_t stream) {
+  cudaStream_t cudaStream = *(cudaStream_t *)stream;
+  flagcxDevComm devCommKernel(*devComm);
+  flagcxDevMem devMemKernel(*devMem);
+
+  int myRank = devComm->intraRank;
+  int nRanks = devComm->intraSize;
+
+  kernelVerifyIntraPointer<<<1, 1, 0, cudaStream>>>(devCommKernel, devMemKernel,
+                                                     myRank, nRanks);
+
+  cudaError_t err = cudaGetLastError();
+  return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+// ==========================================================================
 // Inter-node One-sided AlltoAll
 //
 // Thread-stride loop: each thread dispatches put ops to different peers.

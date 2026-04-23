@@ -34,7 +34,14 @@ endif
 COMMON_INCLUDES = -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I../../third-party/json/single_include -I$(INCLUDEDIR) -I$(MPI_INCLUDE) -I$(DEVICE_INCLUDE)
 COMMON_LIBS = -L../../build/lib -L$(MPI_LIB) -L$(DEVICE_LIB) -lflagcx $(MPI_LINK) $(DEVICE_LINK)
 
-all: test-intranode test-internode-twosided test-internode-onesided test-device-api test-multi-fifo
+CCL_HOME ?=
+ifeq ($(USE_NVIDIA), 1)
+	CCL_HOME = /usr/local/nccl/build
+endif
+CCL_INCLUDE = $(CCL_HOME)/include
+CCL_LIB = $(CCL_HOME)/lib
+
+all: test-intranode test-internode-twosided test-internode-onesided test-device-api test-multi-fifo test-get-peer-pointer
 
 test-intranode: test_intranode.cpp
 	@echo "Compiling $@"
@@ -56,8 +63,12 @@ test-multi-fifo: test_multi_fifo.cpp
 	@echo "Compiling $@"
 	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_multi_fifo test_multi_fifo.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
 
+test-get-peer-pointer: test_get_peer_pointer.cpp
+	@echo "Compiling $@"
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_get_peer_pointer test_get_peer_pointer.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
+
 clean:
-	@rm -f test_intranode test_internode_twosided test_internode_onesided test_device_api test_multi_fifo
+	@rm -f test_intranode test_internode_twosided test_internode_onesided test_device_api test_multi_fifo test_get_peer_pointer
 
 print_var:
 	@echo "INCLUDEDIR: $(INCLUDEDIR)"

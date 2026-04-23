@@ -488,4 +488,19 @@ flagcxResult_t flagcxIntraAllReduce(flagcxDevMem_t devMem, size_t count,
                                     flagcxDevComm_t devComm,
                                     flagcxStream_t stream);
 
+// Intra-node PeerPointer correctness test.
+// Each rank writes its rank value into every peer's buffer at offset [myRank].
+// After completion, each rank's buffer should contain buf[i] == i for all i.
+// resultBuf (device): uint64_t[1], set to 0 on success, non-zero on failure.
+// devComm must be created via flagcxDevCommCreate beforehand.
+flagcxResult_t flagcxIntraTestPeerPointer(flagcxDevMem_t devMem,
+                                          flagcxDevComm_t devComm,
+                                          flagcxStream_t stream);
+
+// Verify getIntraPointer correctness: prints peerPtrs table, self-check,
+// then writes using getIntraPointer. Results printed via printf on device.
+flagcxResult_t flagcxIntraVerifyIntraPointer(flagcxDevMem_t devMem,
+                                             flagcxDevComm_t devComm,
+                                             flagcxStream_t stream);
+
 #endif

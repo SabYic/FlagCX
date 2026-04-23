@@ -217,8 +217,16 @@ struct flagcxDevMem {
 
   FLAGCX_HOST_DEVICE_INLINE flagcxDevMem(const flagcxDevMemInternal &di)
       : _rawPtr(di.rawPtr) {
-    if (di.window)
+    if (di.window) {
       _winBase = *(typename DeviceAPI::Window *)di.window;
+    } else {
+      // Fallback path: no vendor window, manually populate from IPC fields
+      _winBase.rawPtr = di.rawPtr;
+      _winBase.peerPtrs = di.devPeerPtrs;
+      _winBase.intraRank = di.intraRank;
+      _winBase.mrBase = di.mrBase;
+      _winBase.mrIndex = di.mrIndex;
+    }
   }
 
   FLAGCX_HOST_DEVICE_INLINE bool hasWindow() const {
