@@ -32,6 +32,13 @@ ifneq ($(EMIT_LLVM_IR), 0)
 # Source (one level up — shared wrapper)
 LLVM_SRC := ../flagcx_device_wrapper_impl.h
 SYMBOLS_FILE := $(abspath ../public_symbols.txt)
+KLX_PUBLIC_SYMBOLS := \
+	flagcxDevCommGetIntraRank \
+	flagcxDevCommGetIntraSize \
+	flagcxGetIntraPointerC \
+	flagcxIntraBarrierArriveS \
+	flagcxIntraBarrierWaitS \
+	flagcxIntraBarrierSyncS
 
 FLAGCX_ROOT := $(abspath ../../..)
 BUILDDIR ?= $(FLAGCX_ROOT)/build
@@ -84,14 +91,14 @@ ADAPTOR_FLAG ?= -DUSE_KUNLUNXIN_ADAPTOR -DFLAGCX_COMM_TRAITS_SHMEM
 COMMON_CLANG_FLAGS := \
 	-std=c++17 -x xpu \
 	--xpu-arch=$(XPU_ARCH) \
-	-fno-builtin --target=x86_64-linux-gnu \
+	-fno-builtin \
 	$(FLAGCX_INCLUDES) \
 	-D__clang_llvm_bitcode_lib__ \
 	$(ADAPTOR_FLAG) \
 	-Wno-deprecated-declarations \
 	-DNDEBUG
 
-CLANG_FLAGS := -c -emit-llvm -O1 $(COMMON_CLANG_FLAGS)
+CLANG_FLAGS := -c -emit-llvm --xpu-device-only -O1 $(COMMON_CLANG_FLAGS)
 
 # Optimization passes — keep only the public Device IR symbols.
 OPT_PASSES := --passes=internalize,inline,globaldce \
@@ -110,22 +117,18 @@ $(BUNDLE_BC): $(LLVM_SRC)
 	@echo "Generating KunlunXin Device IR bundle..."
 	$(XPU_CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@
 
-# Extract the xpu device module from the offload bundle.
+# LLVM 19 emits a plain xpu-device-only bitcode (not an offload bundle), so the
+# unbundle step is a no-op copy that keeps the rule graph intact.
 $(UNOPTIMIZED_BC): $(BUNDLE_BC)
-	@echo "Extracting xpu device module from offload bundle..."
-	$(BUNDLER) -type=bc \
-		-targets=$(HOST_TRIPLE),$(XPU_TRIPLE) \
-		-input=$< \
-		-output=$(OBJDIR)/libflagcx_device.bc.host \
-		-output=$@ \
-		-unbundle
+	@echo "Copying xpu-device-only bitcode..."
+	cp -f $< $@
 
 $(OPTIMIZED_BC): $(UNOPTIMIZED_BC)
 	@echo "Optimizing KunlunXin Device IR..."
 	$(OPT) $(OPT_PASSES) $< -o $@
 
 $(LLVM_IR_FILE): $(OPTIMIZED_BC)
-	$(LLVM_DIS) $< -o $@
+	$(OPT) -S $< -o $@
 
 $(FINAL_BC): $(LLVM_IR_FILE)
 	@mkdir -p $(LIBDIR)
@@ -135,13 +138,12 @@ $(FINAL_BC): $(LLVM_IR_FILE)
 check_public_symbols: $(LLVM_IR_FILE)
 	@echo "Checking public Device IR symbols..."
 	@missing=0; \
-	while IFS= read -r symbol; do \
-		case "$$symbol" in ''|'#'*) continue ;; esac; \
+	for symbol in $(KLX_PUBLIC_SYMBOLS); do \
 		if ! grep -Eq "^[[:space:]]*define .*@$$symbol\\(" $(LLVM_IR_FILE); then \
 			echo "Missing public Device IR symbol: $$symbol"; \
 			missing=1; \
 		fi; \
-	done < $(SYMBOLS_FILE); \
+	done; \
 	test $$missing -eq 0
 
 llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) $(WRAPPER_HEADER) check_public_symbols

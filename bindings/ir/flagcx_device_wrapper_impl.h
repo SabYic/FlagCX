@@ -13,7 +13,108 @@
 #include "flagcx_device_wrapper.h"
 #include <new>
 
-#if FLAGCX_CHECK_DEVICE_CC
+#if defined(USE_KUNLUNXIN_ADAPTOR) && defined(__clang_llvm_bitcode_lib__)
+
+/* ================================================================
+ * KunlunXin / XPU Device IR boundary.
+ *
+ * XTDK's C++ frontend cannot call generic-address-space member functions on
+ * address-space-1 pointers, so the six FlagTree-linked entry points below read
+ * the SHMEM Comm / Window fields directly instead of going through the
+ * flagcxDevComm / flagcxDevMem accessors.  The full C++ wrapper above is not
+ * compiled for this translation unit.
+ * ================================================================ */
+
+static FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny
+klxMakeCoopFromKind(flagcxCoopKind_t kind) {
+  switch (kind) {
+    case FLAGCX_COOP_BLOCK:
+      return flagcxCoopAny(flagcxCoopBlock());
+    case FLAGCX_COOP_WARP:
+      return flagcxCoopAny(flagcxCoopWarp());
+    case FLAGCX_COOP_THREAD:
+    default:
+      return flagcxCoopAny(flagcxCoopThread());
+  }
+}
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR int
+flagcxDevCommGetIntraRank(const void FLAGCX_IR_GLOBAL_PTR *commOpaque) {
+  const flagcxDevComm FLAGCX_IR_GLOBAL_PTR *comm =
+      (const flagcxDevComm FLAGCX_IR_GLOBAL_PTR *)commOpaque;
+  return comm->_commBase.intraRank;
+}
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR int
+flagcxDevCommGetIntraSize(const void FLAGCX_IR_GLOBAL_PTR *commOpaque) {
+  const flagcxDevComm FLAGCX_IR_GLOBAL_PTR *comm =
+      (const flagcxDevComm FLAGCX_IR_GLOBAL_PTR *)commOpaque;
+  return comm->_commBase.intraSize;
+}
+
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_IR_GLOBAL_RETURN_PTR void *
+flagcxGetIntraPointerC(const void FLAGCX_IR_GLOBAL_PTR *memOpaque,
+                       FLAGCX_IR_OFFSET_TYPE offset, int peer) {
+  const flagcxDevMem FLAGCX_IR_GLOBAL_PTR *mem =
+      (const flagcxDevMem FLAGCX_IR_GLOBAL_PTR *)memOpaque;
+  int worldPeer = mem->_winBase.intraPeMap[peer];
+  return flagcxXshmemDevice::peerPtr(
+      (XSHMEM_FGP char *)mem->_winBase.symBase + offset, worldPeer);
+}
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxIntraBarrierArriveS(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+                          flagcxCoopKind_t coopKind, uint32_t index,
+                          bool multimem, flagcxDeviceMemoryOrder_t order) {
+  (void)index;
+  (void)multimem;
+  (void)order;
+  const flagcxDevComm FLAGCX_IR_GLOBAL_PTR *comm =
+      (const flagcxDevComm FLAGCX_IR_GLOBAL_PTR *)commOpaque;
+  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind);
+  if (comm->_commBase.gridSyncState && comm->_commBase.intraSize > 0) {
+    xshmemGridArrive(coop, comm->_commBase.gridSyncState, 0,
+                     comm->_commBase.intraSize, 1,
+                     comm->_commBase.intraRank, comm->_commBase.intraPeMap);
+  }
+}
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxIntraBarrierWaitS(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+                        flagcxCoopKind_t coopKind, uint32_t index,
+                        bool multimem, flagcxDeviceMemoryOrder_t order) {
+  (void)index;
+  (void)multimem;
+  (void)order;
+  const flagcxDevComm FLAGCX_IR_GLOBAL_PTR *comm =
+      (const flagcxDevComm FLAGCX_IR_GLOBAL_PTR *)commOpaque;
+  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind);
+  if (comm->_commBase.gridSyncState && comm->_commBase.intraSize > 0) {
+    xshmemGridWait(coop, comm->_commBase.gridSyncState,
+                   comm->_commBase.intraSize);
+  }
+}
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+                        flagcxCoopKind_t coopKind, uint32_t index,
+                        bool multimem, flagcxDeviceMemoryOrder_t order) {
+  (void)index;
+  (void)multimem;
+  const flagcxDevComm FLAGCX_IR_GLOBAL_PTR *comm =
+      (const flagcxDevComm FLAGCX_IR_GLOBAL_PTR *)commOpaque;
+  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind);
+  if (comm->_commBase.gridSyncState && comm->_commBase.intraSize > 0) {
+    xshmemGridArrive(coop, comm->_commBase.gridSyncState, 0,
+                     comm->_commBase.intraSize, 1,
+                     comm->_commBase.intraRank, comm->_commBase.intraPeMap);
+    xshmemGridWait(coop, comm->_commBase.gridSyncState,
+                   comm->_commBase.intraSize);
+  }
+}
+
+#elif FLAGCX_CHECK_DEVICE_CC
 
 /* ================================================================
  * Category 1: Comm Queries (4)
@@ -175,7 +276,7 @@ flagcxGetLocalPointerC(const void FLAGCX_IR_GLOBAL_PTR *memOpaque,
 FLAGCX_IR_EXTERN_C
 FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_IR_GLOBAL_RETURN_PTR void *
 flagcxGetIntraPointerC(const void FLAGCX_IR_GLOBAL_PTR *memOpaque,
-                       size_t offset, int peer) {
+                       FLAGCX_IR_OFFSET_TYPE offset, int peer) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
   return FLAGCX_IR_GLOBAL_PTR_CAST(void,
                                    flagcxGetIntraPointer(*mem, offset, peer));
