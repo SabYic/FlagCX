@@ -112,7 +112,7 @@ $(WRAPPER_HEADER): ../flagcx_device_wrapper.h
 	@mkdir -p $(INCLUDEDIR)
 	cp -f $< $@
 
-$(BUNDLE_BC): $(LLVM_SRC)
+$(BUNDLE_BC): $(LLVM_SRC) ir_views.h
 	@mkdir -p $(OBJDIR)
 	@echo "Generating KunlunXin Device IR bundle..."
 	$(XPU_CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@
@@ -136,14 +136,22 @@ $(FINAL_BC): $(LLVM_IR_FILE)
 	$(LLVM_AS) $< -o $@
 
 check_public_symbols: $(LLVM_IR_FILE)
-	@echo "Checking public Device IR symbols..."
+	@echo "Checking public Device IR symbols and ABI..."
 	@missing=0; \
 	for symbol in $(KLX_PUBLIC_SYMBOLS); do \
 		if ! grep -Eq "^[[:space:]]*define .*@$$symbol\\(" $(LLVM_IR_FILE); then \
 			echo "Missing public Device IR symbol: $$symbol"; \
 			missing=1; \
 		fi; \
+		if ! grep -Eq "^[[:space:]]*define .*@$$symbol\\(ptr addrspace\\(1\\)" $(LLVM_IR_FILE); then \
+			echo "Missing AS1 descriptor parameter: $$symbol"; \
+			missing=1; \
+		fi; \
 	done; \
+	if ! grep -Eq "^[[:space:]]*define .*@flagcxGetIntraPointerC\\(.*i64.*i32" $(LLVM_IR_FILE); then \
+		echo "flagcxGetIntraPointerC offset must be i64"; \
+		missing=1; \
+	fi; \
 	test $$missing -eq 0
 
 llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) $(WRAPPER_HEADER) check_public_symbols
