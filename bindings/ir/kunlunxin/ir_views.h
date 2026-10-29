@@ -33,15 +33,14 @@ struct KlxCommView {
   FLAGCX_DEVICE_INLINE_DECORATOR void arrive(flagcxCoopAny &coop) const {
     if (p->_commBase.gridSyncState && p->_commBase.intraSize > 0) {
       xshmemGridArrive(coop, p->_commBase.gridSyncState, 0,
-                       p->_commBase.intraSize, 1,
-                       p->_commBase.intraRank, p->_commBase.intraPeMap);
+                       p->_commBase.intraSize, 1, p->_commBase.intraRank,
+                       p->_commBase.intraPeMap);
     }
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void wait(flagcxCoopAny &coop) const {
     if (p->_commBase.gridSyncState && p->_commBase.intraSize > 0) {
-      xshmemGridWait(coop, p->_commBase.gridSyncState,
-                     p->_commBase.intraSize);
+      xshmemGridWait(coop, p->_commBase.gridSyncState, p->_commBase.intraSize);
     }
   }
 

@@ -49,7 +49,8 @@
 // pointers) in global address space 1. Keep this separate from
 // FLAGCX_DEVICE_GLOBAL_PTR: the latter is also used by by-value C++ layouts,
 // where changing the pointer type would alter the shared host/device ABI.
-#if (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) || \
+#if (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
+     defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
     (defined(USE_KUNLUNXIN_ADAPTOR) && defined(__clang_llvm_bitcode_lib__))
 #define FLAGCX_IR_GLOBAL_PTR __attribute__((address_space(1)))
 #define FLAGCX_IR_GLOBAL_RETURN_PTR __attribute__((address_space(1)))
